@@ -5,6 +5,7 @@
 
 import asyncio
 import logging
+import time
 import struct
 from typing import Optional, Any
 
@@ -153,6 +154,16 @@ class BLEDeviceManager:
                                 await self._write(client, encoded)
                             except asyncio.QueueEmpty:
                                 pass
+                            if (
+                                self._authenticated
+                                and self._auth_completed_at is not None
+                                and not self._saw_post_auth_data
+                                and time.monotonic() - self._auth_completed_at > 5
+                            ):
+                                _copy_log(logging.WARNING,
+                                          "[%s] No payload data received within 5s after auth",
+                                          self._device.name)
+                                self._saw_post_auth_data = True
                             await asyncio.sleep(0.1)
 
                 except EOFError:
@@ -192,6 +203,18 @@ class BLEDeviceManager:
                         self._device.name)
             return
         self._send_queue.put_nowait(packet)
+
+    async def _send_initial_requests(self, client: BleakClient):
+        requests = self._device.get_initial_requests()
+        if not requests:
+            return
+        for packet in requests:
+            encoded = self._crypto.encode_packet(packet)
+            await self._write(client, encoded)
+            _copy_log(logging.DEBUG,
+                      "[%s] Initial request sent: src=0x%02X dst=0x%02X cmdSet=0x%02X cmdId=0x%02X",
+                      self._device.name, packet.src, packet.dst, packet.cmdSet, packet.cmdId)
+            await asyncio.sleep(0.05)
 
     # =========================================================================
     # Auth Handshake
@@ -250,7 +273,7 @@ class BLEDeviceManager:
     async def _auth_type7_step3_authstatus(self, client: BleakClient):
         """Type7 Schritt 3: Auth Status Request"""
         self._auth_state = "type7_authstatus_sent"
-        packet = Packet(0x21, 0x35, 0x35, 0x89, b"", 0x01, 0x01, 0x03)
+        packet = Packet(0x21, 0x35, 0x35, 0x89, b"", 0x01, 0x01, 0x13)
         encoded = self._crypto.encode_packet(packet)
         log.debug("[%s] Type7: sende Auth Status Request", self._device.name)
         _copy_log(logging.DEBUG,
@@ -262,7 +285,7 @@ class BLEDeviceManager:
         """Type7 Schritt 4: MD5-Auth"""
         self._auth_state = "type7_auth_sent"
         md5_payload = build_auth_md5(str(self._device.user_id), self._serial)
-        packet = Packet(0x21, 0x35, 0x35, 0x86, md5_payload, 0x01, 0x01, 0x03)
+        packet = Packet(0x21, 0x35, 0x35, 0x86, md5_payload, 0x01, 0x01, 0x13)
         encoded = self._crypto.encode_packet(packet)
         log.debug("[%s] Type7: sende MD5-Auth Packet", self._device.name)
         _copy_log(logging.DEBUG,
@@ -433,6 +456,7 @@ class BLEDeviceManager:
             for pkt in packets:
                 parsed = self._device.parse_data(pkt)
                 if parsed:
+                    self._saw_post_auth_data = True
                     self._device.update_state(parsed)
 
     # =========================================================================
