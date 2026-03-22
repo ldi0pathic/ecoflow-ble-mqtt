@@ -103,8 +103,6 @@ class BLEDeviceManager:
         # State-Machine für Auth
         self._auth_state      = "idle"
         self._seq_counter     = 0
-        self._auth_completed_at: float | None = None
-        self._saw_post_auth_data = False
 
     # =========================================================================
     # Hauptschleife
@@ -138,9 +136,6 @@ class BLEDeviceManager:
                         self._auth_buffer   = bytearray()
                         self._auth_state    = "idle"
                         self._seq_counter   = 0
-                        self._auth_completed_at = None
-                        self._saw_post_auth_data = False
-
                         if self._encrypt_type == 1:
                             self._crypto = Type1Crypto(self._serial)
                         else:
@@ -441,12 +436,9 @@ class BLEDeviceManager:
                     log.info("[%s] ✓ Authentifizierung erfolgreich!", self._device.name)
                     self._authenticated = True
                     self._auth_state = "authenticated"
-                    self._auth_completed_at = time.monotonic()
-                    self._saw_post_auth_data = False
                     _copy_log(logging.INFO,
                               "[%s] Type7 MD5-Auth accepted: payload=%s",
                               self._device.name, payload.hex())
-                    await self._send_initial_requests(self._client)
                 else:
                     log.warning("[%s] Type7: MD5-Auth abgelehnt (status=0x%02X)",
                                 self._device.name, status)
@@ -460,7 +452,7 @@ class BLEDeviceManager:
                           self._device.name, len(data), data.hex())
 
         if self._auth_state == "authenticated":
-            packets = self._crypto.decode_packets(data)
+            packets, self._rx_buffer = self._crypto.decode_packets_buffered(data, self._rx_buffer)
             for pkt in packets:
                 parsed = self._device.parse_data(pkt)
                 if parsed:

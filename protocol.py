@@ -204,14 +204,23 @@ class Type7Crypto:
 
     def decode_packets(self, data: bytes) -> list[Packet]:
         """Parst und entschlüsselt eingehende EncPackets"""
+        packets, _ = self.decode_packets_buffered(data, bytearray())
+        return packets
+
+    def decode_packets_buffered(self, data: bytes, buffer: bytearray) -> tuple[list[Packet], bytearray]:
+        """Parst EncPackets mit optionalem Fragment-Buffer."""
+        data = bytes(buffer) + data
+        buffer = bytearray()
         packets = []
         while data:
             start = data.find(PREFIX_5A)
             if start < 0:
+                data = b""
                 break
             if start > 0:
                 data = data[start:]
             if len(data) < 8:
+                buffer = bytearray(data)
                 break
             payload_with_crc_len = struct.unpack("<H", data[4:6])[0]
             if payload_with_crc_len < 2:
@@ -219,6 +228,7 @@ class Type7Crypto:
                 continue
             frame_len = 6 + payload_with_crc_len
             if frame_len > len(data):
+                buffer = bytearray(data)
                 break
             frame    = data[:frame_len]
             data     = data[frame_len:]
@@ -232,7 +242,7 @@ class Type7Crypto:
                 packets.append(pkt)
             except Exception as e:
                 log.debug("Decode error: %s", e)
-        return packets
+        return packets, buffer
 
     @property
     def is_ready(self) -> bool:
