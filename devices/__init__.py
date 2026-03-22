@@ -6,15 +6,16 @@
 from typing import Optional
 from .base import EcoFlowDevice
 from .powerstream import PowerStream
+from .delta2max import Delta2Max
 
 # --- Alle unterstützten Gerätetypen -----------------------------------------
 # Key = type-String aus config.py
 DEVICE_REGISTRY: dict[str, type[EcoFlowDevice]] = {
     "powerstream": PowerStream,
+    "delta2max": Delta2Max,
 
     # Später einfach hinzufügen:
-    # "delta2":    Delta2,
-    # "delta2max": Delta2Max,
+    # "delta2": Delta2,
 }
 
 # --- Serienpräfix → Klasse Mapping (für automatisches Erkennen beim Scan) ----

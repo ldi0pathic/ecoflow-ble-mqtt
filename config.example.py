@@ -18,8 +18,14 @@ DEVICES = [
         "type":    "powerstream",
         "name":    "powerstream_800w",     # frei wählbar, wird Teil des MQTT-Topics
         "address": "",                     # z.B. "AA:BB:CC:DD:EE:FF"
-        "user_id": 123456,              # deine EcoFlow User-ID 
+        "user_id": 123456,                  # deine EcoFlow User-ID
     },
+    # {
+    #     "type":    "delta2max",
+    #     "name":    "delta2_max",
+    #     "address": "",                  # leer = Auto-Erkennung per Serienpräfix R351/R354
+    #     "user_id": 123456,
+    # },
 ]
 
 # --- BLE Einstellungen -------------------------------------------------------
@@ -29,3 +35,4 @@ BLE_CONNECT_TIMEOUT   = 20    # Sekunden bis Verbindungsabbruch
 
 # --- Logging -----------------------------------------------------------------
 LOG_LEVEL = "INFO"   # DEBUG, INFO, WARNING, ERROR
+LOG_FILE  = ""       # optional, z.B. "/var/log/ecoflow-ble.log"
