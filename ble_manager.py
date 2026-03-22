@@ -103,6 +103,8 @@ class BLEDeviceManager:
         # State-Machine für Auth
         self._auth_state      = "idle"
         self._seq_counter     = 0
+        self._auth_completed_at: Optional[float] = None
+        self._saw_post_auth_data = False
 
     # =========================================================================
     # Hauptschleife
@@ -136,6 +138,8 @@ class BLEDeviceManager:
                         self._auth_buffer   = bytearray()
                         self._auth_state    = "idle"
                         self._seq_counter   = 0
+                        self._auth_completed_at = None
+                        self._saw_post_auth_data = False
                         if self._encrypt_type == 1:
                             self._crypto = Type1Crypto(self._serial)
                         else:
@@ -215,6 +219,14 @@ class BLEDeviceManager:
                       "[%s] Initial request sent: src=0x%02X dst=0x%02X cmdSet=0x%02X cmdId=0x%02X",
                       self._device.name, packet.src, packet.dst, packet.cmdSet, packet.cmdId)
             await asyncio.sleep(0.05)
+
+    async def _mark_authenticated(self):
+        self._authenticated = True
+        self._auth_state = "authenticated"
+        self._auth_completed_at = time.monotonic()
+        self._saw_post_auth_data = False
+        if self._client:
+            await self._send_initial_requests(self._client)
 
     # =========================================================================
     # Auth Handshake
@@ -349,8 +361,7 @@ class BLEDeviceManager:
                               self._device.name, pkt.src, pkt.cmdSet, pkt.cmdId)
                     if pkt.cmdSet == 0x35 and pkt.cmdId == 0x86:
                         log.info("[%s] ✓ Authentifizierung erfolgreich!", self._device.name)
-                        self._authenticated = True
-                        self._auth_state = "authenticated"
+                        await self._mark_authenticated()
                         return
             except Exception as e:
                 log.debug("[%s] Auth decode attempt: %s", self._device.name, e)
@@ -359,8 +370,7 @@ class BLEDeviceManager:
             if data and len(data) > 4:
                 log.info("[%s] ✓ Auth Response empfangen, setze authenticated",
                          self._device.name)
-                self._authenticated = True
-                self._auth_state = "authenticated"
+                await self._mark_authenticated()
 
         if self._auth_state == "authenticated":
             packets, self._rx_buffer = self._crypto.decode_packets(
@@ -434,8 +444,7 @@ class BLEDeviceManager:
                 status = _extract_type7_status(payload)
                 if payload[0] in (0xF0, 0xF1) and status in (0x00, 0x01):
                     log.info("[%s] ✓ Authentifizierung erfolgreich!", self._device.name)
-                    self._authenticated = True
-                    self._auth_state = "authenticated"
+                    await self._mark_authenticated()
                     _copy_log(logging.INFO,
                               "[%s] Type7 MD5-Auth accepted: payload=%s",
                               self._device.name, payload.hex())
@@ -471,6 +480,8 @@ class BLEDeviceManager:
                       self._device.name, self._auth_state, self._serial)
         self._authenticated = False
         self._auth_state    = "idle"
+        self._auth_completed_at = None
+        self._saw_post_auth_data = False
         self._auth_buffer.clear()
         self._rx_buffer.clear()
         self._client = None
