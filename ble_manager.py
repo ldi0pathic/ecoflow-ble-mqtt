@@ -241,7 +241,7 @@ class BLEDeviceManager:
     async def _auth_type7_step3_authstatus(self, client: BleakClient):
         """Type7 Schritt 3: Auth Status Request"""
         self._auth_state = "type7_authstatus_sent"
-        packet = Packet(0x21, 0x35, 0x35, 0x89, b"", 0x01, 0x01, 0x03)
+        packet = Packet(0x21, 0x35, 0x35, 0x89, b"", 0x01, 0x01, 0x13)
         encoded = self._crypto.encode_packet(packet)
         log.debug("[%s] Type7: sende Auth Status Request", self._device.name)
         _copy_log(logging.DEBUG,
@@ -253,7 +253,7 @@ class BLEDeviceManager:
         """Type7 Schritt 4: MD5-Auth"""
         self._auth_state = "type7_auth_sent"
         md5_payload = build_auth_md5(str(self._device.user_id), self._serial)
-        packet = Packet(0x21, 0x35, 0x35, 0x86, md5_payload, 0x01, 0x01, 0x03)
+        packet = Packet(0x21, 0x35, 0x35, 0x86, md5_payload, 0x01, 0x01, 0x13)
         encoded = self._crypto.encode_packet(packet)
         log.debug("[%s] Type7: sende MD5-Auth Packet", self._device.name)
         _copy_log(logging.DEBUG,
