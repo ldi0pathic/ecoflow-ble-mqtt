@@ -379,16 +379,24 @@ class BLEDeviceManager:
 
         if self._auth_state == "type7_authstatus_sent":
             # Auth Status Response
-            packets = self._crypto.decode_packets(data)
-            if packets:
-                payload = packets[0].payload
-                status = payload[0] if payload else 0x00
+            self._auth_buffer.extend(data)
+            payload = parse_simple(bytes(self._auth_buffer))
+            if payload:
+                self._auth_buffer.clear()
+                status = _extract_type7_status(payload)
                 log.debug("[%s] Type7: Auth Status empfangen (payload=%s, status=0x%02X)",
                           self._device.name, payload.hex(), status)
                 _copy_log(logging.DEBUG,
                           "[%s] Type7 Auth Status Response: payload=%s status=0x%02X",
                           self._device.name, payload.hex(), status)
-                await self._auth_type7_step4_md5(self._client)
+                # Beobachtetes Delta2(Max)-Verhalten: kurzer Simple-Frame `f0 xx`.
+                # Schon bei `f0 01` muss mit MD5-Auth fortgefahren werden.
+                if payload[0] == 0xF0:
+                    await self._auth_type7_step4_md5(self._client)
+                else:
+                    _copy_log(logging.WARNING,
+                              "[%s] Unexpected Type7 Auth Status payload=%s",
+                              self._device.name, payload.hex())
             elif data:
                 _copy_log(logging.WARNING,
                           "[%s] Type7 Auth Status undecodable notify: len=%d raw=%s",
@@ -397,11 +405,12 @@ class BLEDeviceManager:
 
         if self._auth_state == "type7_auth_sent":
             # MD5 Auth Response
-            packets = self._crypto.decode_packets(data)
-            for pkt in packets:
-                payload = pkt.payload
-                status = payload[0] if payload else 0x00
-                if status == 0x00:
+            self._auth_buffer.extend(data)
+            payload = parse_simple(bytes(self._auth_buffer))
+            if payload:
+                self._auth_buffer.clear()
+                status = _extract_type7_status(payload)
+                if payload[0] == 0xF1 and status in (0x00, 0x01):
                     log.info("[%s] ✓ Authentifizierung erfolgreich!", self._device.name)
                     self._authenticated = True
                     self._auth_state = "authenticated"
