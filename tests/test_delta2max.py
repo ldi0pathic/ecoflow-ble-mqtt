@@ -1,6 +1,7 @@
 import unittest
 
 from devices.delta2max import Delta2Max
+from protocol import Type7Crypto, encode_simple
 
 
 class Delta2MaxTests(unittest.TestCase):
@@ -36,6 +37,16 @@ class Delta2MaxTests(unittest.TestCase):
     def test_build_set_command_rejects_invalid_values(self):
         self.assertIsNone(self.device.build_set_command("battery_charge_limit_max", "bad"))
         self.assertIsNone(self.device.build_set_command("unknown", 1))
+
+
+class Type7CryptoFrameTests(unittest.TestCase):
+    def test_decode_packets_buffered_ignores_simple_frames_after_auth(self):
+        crypto = Type7Crypto()
+
+        packets, buffer = crypto.decode_packets_buffered(encode_simple(b"\xf0\x01"), bytearray())
+
+        self.assertEqual(packets, [])
+        self.assertEqual(buffer, bytearray())
 
 
 if __name__ == "__main__":

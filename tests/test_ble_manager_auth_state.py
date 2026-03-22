@@ -26,10 +26,13 @@ class FakeCrypto:
 
 
 class FakeClient:
-    def __init__(self):
+    def __init__(self, fail=False):
+        self.fail = fail
         self.writes = []
 
     async def write_gatt_char(self, uuid, chunk, response=False):
+        if self.fail:
+            raise RuntimeError("write failed")
         self.writes.append((uuid, chunk, response))
 
 
@@ -58,6 +61,14 @@ class BLEManagerAuthStateTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(client.writes), 1)
         self.assertEqual(self.manager._poll_index, 0)
         self.assertGreater(self.manager._next_poll_at, 0.0)
+
+    async def test_poll_initial_request_retries_same_packet_after_write_failure(self):
+        client = FakeClient(fail=True)
+
+        await self.manager._poll_initial_request(client)
+
+        self.assertEqual(self.manager._poll_index, 0)
+        self.assertGreaterEqual(self.manager._next_poll_at, 1.0)
 
     async def test_disconnect_clears_poll_state(self):
         self.manager._authenticated = True

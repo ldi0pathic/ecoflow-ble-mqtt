@@ -210,13 +210,15 @@ class BLEDeviceManager:
             return
 
         packet = requests[self._poll_index % len(requests)]
-        self._poll_index = (self._poll_index + 1) % len(requests)
         encoded = self._crypto.encode_packet(packet)
-        await self._write(client, encoded)
-        _copy_log(logging.DEBUG,
-                  "[%s] Poll request sent: src=0x%02X dst=0x%02X cmdSet=0x%02X cmdId=0x%02X",
-                  self._device.name, packet.src, packet.dst, packet.cmdSet, packet.cmdId)
-        self._next_poll_at = now + 0.35
+        if await self._write(client, encoded):
+            self._poll_index = (self._poll_index + 1) % len(requests)
+            _copy_log(logging.DEBUG,
+                      "[%s] Poll request sent: src=0x%02X dst=0x%02X cmdSet=0x%02X cmdId=0x%02X",
+                      self._device.name, packet.src, packet.dst, packet.cmdSet, packet.cmdId)
+            self._next_poll_at = now + 0.35
+        else:
+            self._next_poll_at = now + 1.0
 
     async def _mark_authenticated(self):
         self._authenticated = True
@@ -481,7 +483,7 @@ class BLEDeviceManager:
         self._rx_buffer.clear()
         self._client = None
 
-    async def _write(self, client: BleakClient, data: bytes):
+    async def _write(self, client: BleakClient, data: bytes) -> bool:
         """Schreibt Daten ans Gerät, aufgeteilt in MTU-Chunks."""
         try:
             mtu = 200
@@ -492,8 +494,10 @@ class BLEDeviceManager:
                                              response=with_response)
                 if len(data) > mtu:
                     await asyncio.sleep(0.02)
+            return True
         except Exception as e:
             log.error("[%s] Write-Fehler: %s", self._device.name, e)
+            return False
 
     async def _resolve_address(self) -> tuple[Optional[str], Any]:
         """Gibt (BLE-Adresse, adv_data) zurück. Scannt wenn nötig."""

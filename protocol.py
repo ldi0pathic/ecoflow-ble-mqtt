@@ -235,6 +235,9 @@ class Type7Crypto:
             crc_recv = struct.unpack("<H", frame[-2:])[0]
             if crc16(frame[:-2]) != crc_recv:
                 continue
+            if frame[2:4] != b"\x10\x01":
+                log.debug("Skipping non-encrypted Type7 frame: %s", frame.hex())
+                continue
             payload_enc = frame[6:-2]
             try:
                 decrypted = self.decrypt(payload_enc)
