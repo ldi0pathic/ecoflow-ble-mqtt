@@ -158,16 +158,8 @@ class BLEDeviceManager:
                                 await self._write(client, encoded)
                             except asyncio.QueueEmpty:
                                 pass
-                            if (
-                                self._authenticated
-                                and self._auth_completed_at is not None
-                                and not self._saw_post_auth_data
-                                and time.monotonic() - self._auth_completed_at > 5
-                            ):
-                                _copy_log(logging.WARNING,
-                                          "[%s] No payload data received within 5s after auth",
-                                          self._device.name)
-                                self._saw_post_auth_data = True
+                            if self._authenticated:
+                                await self._poll_initial_request(client)
                             await asyncio.sleep(0.1)
 
                 except EOFError:
@@ -208,17 +200,29 @@ class BLEDeviceManager:
             return
         self._send_queue.put_nowait(packet)
 
-    async def _send_initial_requests(self, client: BleakClient):
+    async def _poll_initial_request(self, client: BleakClient):
         requests = self._device.get_initial_requests()
         if not requests:
             return
-        for packet in requests:
-            encoded = self._crypto.encode_packet(packet)
-            await self._write(client, encoded)
-            _copy_log(logging.DEBUG,
-                      "[%s] Initial request sent: src=0x%02X dst=0x%02X cmdSet=0x%02X cmdId=0x%02X",
-                      self._device.name, packet.src, packet.dst, packet.cmdSet, packet.cmdId)
-            await asyncio.sleep(0.05)
+
+        now = time.monotonic()
+        if now < self._next_poll_at:
+            return
+
+        packet = requests[self._poll_index % len(requests)]
+        self._poll_index = (self._poll_index + 1) % len(requests)
+        encoded = self._crypto.encode_packet(packet)
+        await self._write(client, encoded)
+        _copy_log(logging.DEBUG,
+                  "[%s] Poll request sent: src=0x%02X dst=0x%02X cmdSet=0x%02X cmdId=0x%02X",
+                  self._device.name, packet.src, packet.dst, packet.cmdSet, packet.cmdId)
+        self._next_poll_at = now + 0.35
+
+    async def _mark_authenticated(self):
+        self._authenticated = True
+        self._auth_state = "authenticated"
+        self._poll_index = 0
+        self._next_poll_at = 0.0
 
     async def _mark_authenticated(self):
         self._authenticated = True
@@ -465,7 +469,6 @@ class BLEDeviceManager:
             for pkt in packets:
                 parsed = self._device.parse_data(pkt)
                 if parsed:
-                    self._saw_post_auth_data = True
                     self._device.update_state(parsed)
 
     # =========================================================================
