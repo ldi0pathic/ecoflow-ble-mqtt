@@ -25,6 +25,24 @@ log = logging.getLogger(__name__)
 EF_MANUFACTURER_ID = 0xB5B5
 
 
+def _is_bluez_in_progress_error(exc: Exception) -> bool:
+    return "org.bluez.Error.InProgress" in str(exc)
+
+
+def _extract_type7_status(payload: bytes) -> int:
+    """
+    Type7 Simple-Responses tragen den eigentlichen Status nicht immer an Stelle 0.
+
+    Beobachtete Frames wie `f0 00` nutzen ein führendes Response-/Opcode-Byte und
+    legen den Erfolgsstatus erst dahinter ab.
+    """
+    if not payload:
+        raise ValueError("empty Type7 status payload")
+    if len(payload) >= 2 and payload[0] in {0xF0, 0xF1}:
+        return payload[1]
+    return payload[-1]
+
+
 def _get_encrypt_type(manufacturer_data: dict) -> int:
     """Liest encrypt_type aus BLE Advertisement Manufacturer Data."""
     data = manufacturer_data.get(EF_MANUFACTURER_ID, b"")
@@ -74,6 +92,7 @@ class BLEDeviceManager:
         self._serial          = ""  # Seriennummer vom Gerät
         self._crypto          = None
         self._rx_buffer       = bytearray()
+        self._auth_buffer     = bytearray()
         self._notify_queue    : asyncio.Queue[bytes] = asyncio.Queue(maxsize=notify_queue_size)
         self._notify_task     : Optional[asyncio.Task] = None
         # State-Machine für Auth
@@ -108,6 +127,7 @@ class BLEDeviceManager:
                         self._client        = client
                         self._authenticated = False
                         self._rx_buffer     = bytearray()
+                        self._auth_buffer   = bytearray()
                         self._auth_state    = "idle"
 
                         if self._encrypt_type == 1:
@@ -138,10 +158,16 @@ class BLEDeviceManager:
                     log.error("[%s] BLE Fehler: %s", self._device.name, e)
                 finally:
                     await self._stop_notify_task()
+                    self._client = None
 
             except asyncio.CancelledError:
                 break
             except Exception as e:
+                if _is_bluez_in_progress_error(e):
+                    log.warning("[%s] BlueZ ist beschäftigt (%s), versuche es gleich erneut...",
+                                self._device.name, e)
+                    await asyncio.sleep(1)
+                    continue
                 log.error("[%s] Fehler: %s", self._device.name, e)
 
             if self._running:
@@ -193,11 +219,13 @@ class BLEDeviceManager:
     async def _auth_type7_step1(self, client: BleakClient):
         """Type7 Schritt 1: Public Key senden"""
         self._auth_state = "type7_pubkey_sent"
+        self._auth_buffer.clear()
         pubkey = self._crypto.public_key_bytes
         log.debug("[%s] Type7: sende Public Key (%d bytes)",
                   self._device.name, len(pubkey))
-        # Public Key wird als einfaches Write gesendet
-        await client.write_gatt_char(UUID_WRITE, pubkey, response=True)
+        # Upstream-Protokoll erwartet ein unverschlüsseltes 5A5A-Command-Frame
+        # mit Prefix 0x01 0x00 vor dem eigentlichen SECP160r1-Public-Key.
+        await self._write(client, encode_simple(b"\x01\x00" + pubkey))
 
     async def _auth_type7_step2_keyinfo(self, client: BleakClient):
         """Type7 Schritt 2: Key Info Request"""
@@ -307,9 +335,12 @@ class BLEDeviceManager:
     async def _handle_type7(self, data: bytes):
         """Type7 (Delta2 etc.) Notify Handler"""
         if self._auth_state == "type7_pubkey_sent":
-            # Device Public Key empfangen
-            if len(data) >= 20:
-                dev_pubkey = data[:20]  # SECP160r1 = 20 bytes
+            # Device Public Key wird als simples 5A5A-Command-Frame zurückgegeben.
+            self._auth_buffer.extend(data)
+            payload = parse_simple(bytes(self._auth_buffer))
+            if payload and len(payload) >= 43:
+                self._auth_buffer.clear()
+                dev_pubkey = payload[3:43]
                 self._crypto.compute_shared_key(dev_pubkey)
                 log.debug("[%s] Type7: Device Public Key empfangen", self._device.name)
                 await self._auth_type7_step2_keyinfo(self._client)
@@ -317,8 +348,10 @@ class BLEDeviceManager:
 
         if self._auth_state == "type7_keyinfo_sent":
             # Key Info Response
-            payload = parse_simple(data)
+            self._auth_buffer.extend(data)
+            payload = parse_simple(bytes(self._auth_buffer))
             if payload and len(payload) > 1 and payload[0] == 0x02:
+                self._auth_buffer.clear()
                 self._crypto.process_key_info(payload[1:])
                 log.debug("[%s] Type7: Session Key empfangen", self._device.name)
                 await self._auth_type7_step3_authstatus(self._client)
@@ -326,19 +359,35 @@ class BLEDeviceManager:
 
         if self._auth_state == "type7_authstatus_sent":
             # Auth Status Response
-            log.debug("[%s] Type7: Auth Status empfangen", self._device.name)
-            await self._auth_type7_step4_md5(self._client)
+            self._auth_buffer.extend(data)
+            payload = parse_simple(bytes(self._auth_buffer))
+            if payload:
+                self._auth_buffer.clear()
+                status = _extract_type7_status(payload)
+                log.debug("[%s] Type7: Auth Status empfangen (payload=%s, status=0x%02X)",
+                          self._device.name, payload.hex(), status)
+                if status == 0x00:
+                    await self._auth_type7_step4_md5(self._client)
+                else:
+                    log.warning("[%s] Type7: Auth Status abgelehnt (status=0x%02X)",
+                                self._device.name, status)
             return
 
         if self._auth_state == "type7_auth_sent":
             # MD5 Auth Response
-            packets = self._crypto.decode_packets(data)
-            for pkt in packets:
-                if pkt.src == 0x35 and pkt.cmdSet == 0x35 and pkt.cmdId == 0x86:
+            self._auth_buffer.extend(data)
+            payload = parse_simple(bytes(self._auth_buffer))
+            if payload:
+                self._auth_buffer.clear()
+                status = _extract_type7_status(payload)
+                if status == 0x00:
                     log.info("[%s] ✓ Authentifizierung erfolgreich!", self._device.name)
                     self._authenticated = True
                     self._auth_state = "authenticated"
-                    return
+                else:
+                    log.warning("[%s] Type7: MD5-Auth abgelehnt (status=0x%02X)",
+                                self._device.name, status)
+                return
 
         if self._auth_state == "authenticated":
             packets = self._crypto.decode_packets(data)
@@ -355,6 +404,9 @@ class BLEDeviceManager:
         log.warning("[%s] BLE Verbindung getrennt", self._device.name)
         self._authenticated = False
         self._auth_state    = "idle"
+        self._auth_buffer.clear()
+        self._rx_buffer.clear()
+        self._client = None
 
     async def _write(self, client: BleakClient, data: bytes):
         """Schreibt Daten ans Gerät, aufgeteilt in MTU-Chunks."""
