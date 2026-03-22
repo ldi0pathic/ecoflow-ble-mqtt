@@ -1,0 +1,6 @@
+bleak>=0.21.0
+paho-mqtt>=1.6.0
+pycryptodome>=3.19.0
+ecdsa>=0.18.0
+crc>=7.0.0
+protobuf>=4.25.0

@@ -1,0 +1,8 @@
+.venv/
+*.log
+*.pyc
+*.service
+__pycache__/
+config.py
+ecoflow-ble.log
+*.bak
