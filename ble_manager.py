@@ -103,8 +103,8 @@ class BLEDeviceManager:
         # State-Machine für Auth
         self._auth_state      = "idle"
         self._seq_counter     = 0
-        self._poll_index      = 0
-        self._next_poll_at    = 0.0
+        self._auth_completed_at: Optional[float] = None
+        self._saw_post_auth_data = False
 
     # =========================================================================
     # Hauptschleife
@@ -138,8 +138,8 @@ class BLEDeviceManager:
                         self._auth_buffer   = bytearray()
                         self._auth_state    = "idle"
                         self._seq_counter   = 0
-                        self._poll_index    = 0
-                        self._next_poll_at  = 0.0
+                        self._auth_completed_at = None
+                        self._saw_post_auth_data = False
                         if self._encrypt_type == 1:
                             self._crypto = Type1Crypto(self._serial)
                         else:
@@ -223,6 +223,14 @@ class BLEDeviceManager:
         self._auth_state = "authenticated"
         self._poll_index = 0
         self._next_poll_at = 0.0
+
+    async def _mark_authenticated(self):
+        self._authenticated = True
+        self._auth_state = "authenticated"
+        self._auth_completed_at = time.monotonic()
+        self._saw_post_auth_data = False
+        if self._client:
+            await self._send_initial_requests(self._client)
 
     # =========================================================================
     # Auth Handshake
@@ -475,8 +483,8 @@ class BLEDeviceManager:
                       self._device.name, self._auth_state, self._serial)
         self._authenticated = False
         self._auth_state    = "idle"
-        self._poll_index    = 0
-        self._next_poll_at  = 0.0
+        self._auth_completed_at = None
+        self._saw_post_auth_data = False
         self._auth_buffer.clear()
         self._rx_buffer.clear()
         self._client = None
