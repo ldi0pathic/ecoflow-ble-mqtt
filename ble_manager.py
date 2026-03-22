@@ -6,7 +6,7 @@
 import asyncio
 import logging
 import struct
-from typing import Optional, Callable, Any
+from typing import Optional, Any
 
 from bleak import BleakClient, BleakScanner
 
@@ -60,10 +60,12 @@ class BLEDeviceManager:
     """
 
     def __init__(self, device: EcoFlowDevice, reconnect_delay: int = 10,
-                 connect_timeout: int = 20):
+                 connect_timeout: int = 20, scan_timeout: int = 30,
+                 notify_queue_size: int = 128):
         self._device          = device
         self._reconnect_delay = reconnect_delay
         self._connect_timeout = connect_timeout
+        self._scan_timeout    = scan_timeout
         self._client          : Optional[BleakClient] = None
         self._authenticated   = False
         self._running         = False
@@ -72,9 +74,10 @@ class BLEDeviceManager:
         self._serial          = ""  # Seriennummer vom Gerät
         self._crypto          = None
         self._rx_buffer       = bytearray()
+        self._notify_queue    : asyncio.Queue[bytes] = asyncio.Queue(maxsize=notify_queue_size)
+        self._notify_task     : Optional[asyncio.Task] = None
         # State-Machine für Auth
         self._auth_state      = "idle"
-        self._notify_handler  = None
 
     # =========================================================================
     # Hauptschleife
@@ -113,6 +116,8 @@ class BLEDeviceManager:
                             self._crypto = Type7Crypto()
 
                         log.info("[%s] Verbunden!", self._device.name)
+                        self._notify_queue = asyncio.Queue(maxsize=self._notify_queue.maxsize)
+                        self._notify_task = asyncio.create_task(self._process_notify_queue())
                         await client.start_notify(UUID_NOTIFY, self._on_notify)
                         await self._start_auth(client)
 
@@ -131,6 +136,8 @@ class BLEDeviceManager:
                     raise
                 except Exception as e:
                     log.error("[%s] BLE Fehler: %s", self._device.name, e)
+                finally:
+                    await self._stop_notify_task()
 
             except asyncio.CancelledError:
                 break
@@ -223,7 +230,31 @@ class BLEDeviceManager:
     def _on_notify(self, _characteristic, data: bytes):
         log.debug("[%s] Notify: %d bytes, auth_state=%s",
                   self._device.name, len(data), self._auth_state)
-        asyncio.ensure_future(self._handle_notify(data))
+        try:
+            self._notify_queue.put_nowait(bytes(data))
+        except asyncio.QueueFull:
+            log.warning("[%s] Notify-Queue voll, Paket verworfen", self._device.name)
+
+    async def _process_notify_queue(self):
+        while self._running:
+            try:
+                data = await self._notify_queue.get()
+                if data is None:
+                    return
+                await self._handle_notify(data)
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                log.warning("[%s] Notify-Worker-Fehler: %s", self._device.name, e)
+
+    async def _stop_notify_task(self):
+        if self._notify_task:
+            self._notify_task.cancel()
+            try:
+                await self._notify_task
+            except asyncio.CancelledError:
+                pass
+            self._notify_task = None
 
     async def _handle_notify(self, data: bytes):
         try:
@@ -356,15 +387,17 @@ class BLEDeviceManager:
 
         # Vollständiger Scan
         log.info("[%s] Scanne nach EcoFlow Geräten...", self._device.name)
-        found = await self._scan_all(timeout=30)
+        found = await self._scan_all(timeout=self._scan_timeout)
         for addr, (name, adv) in found.items():
-            if self._device.__class__.matches_serial(name):
+            mfr = adv.manufacturer_data
+            serial = _get_serial(mfr)
+            identity = serial or name
+            if self._device.__class__.matches_serial(identity):
                 self._device.address = addr
-                mfr                  = adv.manufacturer_data
                 self._encrypt_type   = _get_encrypt_type(mfr)
-                self._serial         = _get_serial(mfr)
-                log.info("[%s] Gefunden: %s (%s), encrypt_type=%d",
-                         self._device.name, name, addr, self._encrypt_type)
+                self._serial         = serial
+                log.info("[%s] Gefunden: %s / %s (%s), encrypt_type=%d",
+                         self._device.name, identity, name, addr, self._encrypt_type)
                 return addr, adv
         return None, None
 

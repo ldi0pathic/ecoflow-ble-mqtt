@@ -9,6 +9,7 @@
 
 import asyncio
 import logging
+import os
 import signal
 import sys
 
@@ -18,14 +19,24 @@ from ble_manager import BLEDeviceManager
 from mqtt_bridge import MQTTBridge
 
 # --- Logging einrichten ------------------------------------------------------
+def _build_log_handlers() -> list[logging.Handler]:
+    handlers: list[logging.Handler] = [logging.StreamHandler(sys.stdout)]
+
+    log_file = getattr(config, "LOG_FILE", "")
+    if log_file:
+        log_dir = os.path.dirname(log_file)
+        if log_dir:
+            os.makedirs(log_dir, exist_ok=True)
+        handlers.append(logging.FileHandler(log_file))
+
+    return handlers
+
+
 logging.basicConfig(
     level=getattr(logging, config.LOG_LEVEL, logging.INFO),
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S",
-    handlers=[
-        logging.StreamHandler(sys.stdout),
-        logging.FileHandler("/home/andre/logs/ecoflow-ble.log"),
-    ]
+    handlers=_build_log_handlers(),
 )
 log = logging.getLogger("main")
 
@@ -58,6 +69,7 @@ class EcoFlowGateway:
                     device          = device,
                     reconnect_delay = config.BLE_RECONNECT_DELAY,
                     connect_timeout = config.BLE_CONNECT_TIMEOUT,
+                    scan_timeout    = config.BLE_SCAN_TIMEOUT,
                 )
 
                 # State-Änderungen → MQTT
