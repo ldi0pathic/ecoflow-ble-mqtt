@@ -410,7 +410,7 @@ class BLEDeviceManager:
             if payload:
                 self._auth_buffer.clear()
                 status = _extract_type7_status(payload)
-                if payload[0] == 0xF1 and status in (0x00, 0x01):
+                if payload[0] in (0xF0, 0xF1) and status in (0x00, 0x01):
                     log.info("[%s] ✓ Authentifizierung erfolgreich!", self._device.name)
                     self._authenticated = True
                     self._auth_state = "authenticated"
@@ -442,7 +442,7 @@ class BLEDeviceManager:
 
     def _on_disconnect(self, _client):
         log.warning("[%s] BLE Verbindung getrennt", self._device.name)
-        if self._auth_state != "authenticated":
+        if self._auth_state not in ("idle", "authenticated"):
             _copy_log(logging.WARNING,
                       "[%s] Disconnect during auth: state=%s serial=%s",
                       self._device.name, self._auth_state, self._serial)
