@@ -209,6 +209,18 @@ class BLEDeviceManager:
             return
         self._send_queue.put_nowait(packet)
 
+    async def _send_initial_requests(self, client: BleakClient):
+        requests = self._device.get_initial_requests()
+        if not requests:
+            return
+        for packet in requests:
+            encoded = self._crypto.encode_packet(packet)
+            await self._write(client, encoded)
+            _copy_log(logging.DEBUG,
+                      "[%s] Initial request sent: src=0x%02X dst=0x%02X cmdSet=0x%02X cmdId=0x%02X",
+                      self._device.name, packet.src, packet.dst, packet.cmdSet, packet.cmdId)
+            await asyncio.sleep(0.05)
+
     # =========================================================================
     # Auth Handshake
     # =========================================================================
@@ -434,6 +446,7 @@ class BLEDeviceManager:
                     _copy_log(logging.INFO,
                               "[%s] Type7 MD5-Auth accepted: payload=%s",
                               self._device.name, payload.hex())
+                    await self._send_initial_requests(self._client)
                 else:
                     log.warning("[%s] Type7: MD5-Auth abgelehnt (status=0x%02X)",
                                 self._device.name, status)

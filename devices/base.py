@@ -62,6 +62,13 @@ class EcoFlowDevice(ABC):
         """
         pass
 
+    def get_initial_requests(self) -> list[Any]:
+        """
+        Optionale Initial-Requests nach erfolgreicher Authentifizierung.
+        Standardmäßig keine zusätzlichen Requests.
+        """
+        return []
+
     # --- Hilfsmethoden -------------------------------------------------------
 
     def update_state(self, new_values: dict[str, Any]):

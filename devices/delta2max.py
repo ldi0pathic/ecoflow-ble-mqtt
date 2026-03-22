@@ -270,6 +270,15 @@ class Delta2Max(EcoFlowDevice):
         except (TypeError, ValueError):
             return None
 
+    def get_initial_requests(self) -> list[Packet]:
+        return [
+            Packet(0x21, 0x02, 0x20, 0x02, b"", version=0x02),
+            Packet(0x21, 0x03, 0x20, 0x02, b"", version=0x02),
+            Packet(0x21, 0x03, 0x20, 0x32, b"", version=0x02),
+            Packet(0x21, 0x04, 0x20, 0x02, b"", version=0x02),
+            Packet(0x21, 0x05, 0x20, 0x02, b"", version=0x02),
+        ]
+
     def _parse_pd(self, hb: Mr350PdHeartbeatDelta2Max) -> dict[str, Any]:
         return {
             "input_power": hb.watts_in_sum,
