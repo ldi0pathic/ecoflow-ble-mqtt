@@ -120,10 +120,9 @@ PREFIX_5A = b"\x5a\x5a"
 
 def encode_simple(payload: bytes) -> bytes:
     """Baut ein unverschlüsseltes 5A5A-EncPacket (für Auth-Kommandos)"""
-    frame_type   = 0x11
-    payload_type = 0x01
-    inner        = bytes([frame_type, payload_type]) + struct.pack("<H", len(payload)) + payload
-    return PREFIX_5A + inner + struct.pack("<H", crc16(inner))
+    header = PREFIX_5A + bytes([0x00, 0x01]) + struct.pack("<H", len(payload) + 2)
+    frame  = header + payload
+    return frame + struct.pack("<H", crc16(frame))
 
 def parse_simple(data: bytes) -> bytes | None:
     """Parst ein unverschlüsseltes 5A5A-EncPacket, gibt payload zurück"""
@@ -133,15 +132,17 @@ def parse_simple(data: bytes) -> bytes | None:
     data = data[start:]
     if len(data) < 8:
         return None
-    inner_len = struct.unpack("<H", data[4:6])[0]
-    end       = 6 + inner_len
-    if end > len(data):
+    payload_with_crc_len = struct.unpack("<H", data[4:6])[0]
+    if payload_with_crc_len < 2:
         return None
-    inner    = data[2:end - 2]
-    crc_recv = struct.unpack("<H", data[end - 2: end])[0]
-    if crc16(inner) != crc_recv:
+    frame_len   = 6 + payload_with_crc_len
+    if frame_len > len(data):
         return None
-    return inner[4:]  # nach frame_type(1)+payload_type(1)+length(2)
+    frame    = data[:frame_len]
+    crc_recv = struct.unpack("<H", frame[-2:])[0]
+    if crc16(frame[:-2]) != crc_recv:
+        return None
+    return frame[6:-2]
 
 
 # =============================================================================
@@ -173,10 +174,13 @@ class Type7Crypto:
 
     def _gen_session_key(self, seed: bytes, s_rand: bytes) -> bytes:
         cipher    = AES.new(self._session_key, AES.MODE_CBC, self._iv)
-        decrypted = unpad(cipher.decrypt(
-            pad(s_rand + seed + bytes(14), AES.block_size)
-        ), AES.block_size)
-        return decrypted[:16]
+        # KeyInfo liefert 16 Byte s_rand + 2 Byte seed; der Upstream-Flow
+        # erweitert das Material auf genau zwei AES-Blöcke und leitet daraus
+        # den neuen 16-Byte-Session-Key per CBC-Verschlüsselung ab.
+        key_material = s_rand + seed + bytes(14)
+        if len(key_material) != AES.block_size * 2:
+            raise ValueError("unexpected Type7 key material length")
+        return cipher.encrypt(key_material)[:16]
 
     def encrypt(self, data: bytes) -> bytes:
         cipher = AES.new(self._session_key, AES.MODE_CBC, self._iv)
@@ -194,10 +198,9 @@ class Type7Crypto:
         """Kodiert ein Packet mit EncPacket-Wrapper (5A5A)"""
         raw       = packet.toBytes()
         encrypted = self.encrypt(raw)
-        frame_type   = 0x10
-        payload_type = 0x01
-        inner        = bytes([frame_type, payload_type]) + struct.pack("<H", len(encrypted)) + encrypted
-        return PREFIX_5A + inner + struct.pack("<H", crc16(inner))
+        header    = PREFIX_5A + bytes([0x10, 0x01]) + struct.pack("<H", len(encrypted) + 2)
+        frame     = header + encrypted
+        return frame + struct.pack("<H", crc16(frame))
 
     def decode_packets(self, data: bytes) -> list[Packet]:
         """Parst und entschlüsselt eingehende EncPackets"""
@@ -210,16 +213,19 @@ class Type7Crypto:
                 data = data[start:]
             if len(data) < 8:
                 break
-            inner_len = struct.unpack("<H", data[4:6])[0]
-            end       = 6 + inner_len
-            if end > len(data):
-                break
-            inner    = data[2:end - 2]
-            crc_recv = struct.unpack("<H", data[end - 2: end])[0]
-            data     = data[end:]
-            if crc16(inner) != crc_recv:
+            payload_with_crc_len = struct.unpack("<H", data[4:6])[0]
+            if payload_with_crc_len < 2:
+                data = data[2:]
                 continue
-            payload_enc = inner[4:]
+            frame_len = 6 + payload_with_crc_len
+            if frame_len > len(data):
+                break
+            frame    = data[:frame_len]
+            data     = data[frame_len:]
+            crc_recv = struct.unpack("<H", frame[-2:])[0]
+            if crc16(frame[:-2]) != crc_recv:
+                continue
+            payload_enc = frame[6:-2]
             try:
                 decrypted = self.decrypt(payload_enc)
                 pkt       = Packet.fromBytes(decrypted)
