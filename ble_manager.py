@@ -335,19 +335,35 @@ class BLEDeviceManager:
 
         if self._auth_state == "type7_authstatus_sent":
             # Auth Status Response
-            log.debug("[%s] Type7: Auth Status empfangen", self._device.name)
-            await self._auth_type7_step4_md5(self._client)
+            self._auth_buffer.extend(data)
+            payload = parse_simple(bytes(self._auth_buffer))
+            if payload:
+                self._auth_buffer.clear()
+                status = payload[0]
+                log.debug("[%s] Type7: Auth Status empfangen (status=0x%02X)",
+                          self._device.name, status)
+                if status == 0x00:
+                    await self._auth_type7_step4_md5(self._client)
+                else:
+                    log.warning("[%s] Type7: Auth Status abgelehnt (status=0x%02X)",
+                                self._device.name, status)
             return
 
         if self._auth_state == "type7_auth_sent":
             # MD5 Auth Response
-            packets = self._crypto.decode_packets(data)
-            for pkt in packets:
-                if pkt.src == 0x35 and pkt.cmdSet == 0x35 and pkt.cmdId == 0x86:
+            self._auth_buffer.extend(data)
+            payload = parse_simple(bytes(self._auth_buffer))
+            if payload:
+                self._auth_buffer.clear()
+                status = payload[0]
+                if status == 0x00:
                     log.info("[%s] ✓ Authentifizierung erfolgreich!", self._device.name)
                     self._authenticated = True
                     self._auth_state = "authenticated"
-                    return
+                else:
+                    log.warning("[%s] Type7: MD5-Auth abgelehnt (status=0x%02X)",
+                                self._device.name, status)
+                return
 
         if self._auth_state == "authenticated":
             packets = self._crypto.decode_packets(data)
