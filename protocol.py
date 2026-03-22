@@ -174,10 +174,13 @@ class Type7Crypto:
 
     def _gen_session_key(self, seed: bytes, s_rand: bytes) -> bytes:
         cipher    = AES.new(self._session_key, AES.MODE_CBC, self._iv)
-        decrypted = unpad(cipher.decrypt(
-            pad(s_rand + seed + bytes(14), AES.block_size)
-        ), AES.block_size)
-        return decrypted[:16]
+        # KeyInfo liefert 16 Byte s_rand + 2 Byte seed; der Upstream-Flow
+        # erweitert das Material auf genau zwei AES-Blöcke und leitet daraus
+        # den neuen 16-Byte-Session-Key per CBC-Verschlüsselung ab.
+        key_material = s_rand + seed + bytes(14)
+        if len(key_material) != AES.block_size * 2:
+            raise ValueError("unexpected Type7 key material length")
+        return cipher.encrypt(key_material)[:16]
 
     def encrypt(self, data: bytes) -> bytes:
         cipher = AES.new(self._session_key, AES.MODE_CBC, self._iv)
