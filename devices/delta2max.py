@@ -228,10 +228,17 @@ class Delta2Max(EcoFlowDevice):
         match (packet.src, packet.cmdSet, packet.cmdId):
             case (0x02, 0x20, 0x02):
                 return self._parse_pd(Mr350PdHeartbeatDelta2Max.from_bytes(packet.payload))
+            case (0x03, 0x03, 0x0E):
+                # In ha-ef-ble werden hier zusätzliche Battery-Kit-Details
+                # verarbeitet. Ohne das vollständige Modell können wir das
+                # Payload hier noch nicht sauber dekodieren.
+                return {}
             case (0x03, 0x20, 0x02):
                 return self._parse_ems(DirectEmsDeltaHeartbeatPack.from_bytes(packet.payload))
             case (0x03, 0x20, 0x32):
                 return self._parse_bms(DirectBmsMDeltaHeartbeatPack.from_bytes(packet.payload))
+            case (0x06, 0x20, 0x32):
+                return self._parse_bms_extra(DirectBmsMDeltaHeartbeatPack.from_bytes(packet.payload))
             case (0x04, _, 0x02):
                 return self._parse_inv(DirectInvDeltaHeartbeatPack.from_bytes(packet.payload))
             case (0x05, 0x20, 0x02):
@@ -244,12 +251,12 @@ class Delta2Max(EcoFlowDevice):
             if key == "ac_charging_speed":
                 watts = max(1, min(int(value), self.MAX_AC_CHARGING_POWER))
                 payload = watts.to_bytes(2, "little") + bytes([0xFF])
-                return Packet(0x21, 0x04, 0x20, 0x45, payload, version=0x02)
+                return Packet(0x21, 0x05, 0x20, 0x45, payload, version=0x02)
 
             if key == "ac_ports":
                 enabled = 1 if int(value) else 0
                 payload = bytes([enabled, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF])
-                return Packet(0x21, 0x04, 0x20, 0x42, payload, version=0x02)
+                return Packet(0x21, 0x05, 0x20, 0x42, payload, version=0x02)
 
             if key == "battery_charge_limit_max":
                 limit = max(50, min(100, int(value)))
@@ -301,6 +308,13 @@ class Delta2Max(EcoFlowDevice):
             "battery_input_power": hb.input_watts,
             "battery_output_power": hb.output_watts,
             "battery_remaining_time": hb.remain_time,
+        }
+
+    def _parse_bms_extra(self, hb: DirectBmsMDeltaHeartbeatPack) -> dict[str, Any]:
+        return {
+            "battery_1_enabled": True,
+            "battery_1_battery_level": round(hb.f32_show_soc, 2) if hb.f32_show_soc else hb.soc,
+            "battery_1_cell_temperature": hb.max_cell_temp,
         }
 
     def _parse_inv(self, hb: DirectInvDeltaHeartbeatPack) -> dict[str, Any]:
