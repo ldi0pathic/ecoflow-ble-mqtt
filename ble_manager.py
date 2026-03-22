@@ -101,6 +101,7 @@ class BLEDeviceManager:
         self._notify_task     : Optional[asyncio.Task] = None
         # State-Machine für Auth
         self._auth_state      = "idle"
+        self._seq_counter     = 0
 
     # =========================================================================
     # Hauptschleife
@@ -133,6 +134,7 @@ class BLEDeviceManager:
                         self._rx_buffer     = bytearray()
                         self._auth_buffer   = bytearray()
                         self._auth_state    = "idle"
+                        self._seq_counter   = 0
 
                         if self._encrypt_type == 1:
                             self._crypto = Type1Crypto(self._serial)
@@ -202,19 +204,27 @@ class BLEDeviceManager:
         else:
             await self._auth_type7_step1(client)
 
+    def _next_seq(self) -> bytes:
+        self._seq_counter = (self._seq_counter + 1) & 0xFFFFFFFF
+        if self._seq_counter == 0:
+            self._seq_counter = 1
+        return self._seq_counter.to_bytes(4, "little")
+
     async def _auth_type1(self, client: BleakClient):
         """Type1: Key aus Seriennummer, dann Auth Status + MD5"""
         self._crypto = Type1Crypto(self._serial)
         self._auth_state = "type1_auth_sent"
 
         # Schritt 1: Auth Status Packet (cmd_id=0x89)
-        pkt_status = Packet(0x21, 0x35, 0x35, 0x89, b"", 0x01, 0x01, 0x13)
+        pkt_status = Packet(0x21, 0x35, 0x35, 0x89, b"", 0x01, 0x01, 0x13,
+                            seq=self._next_seq())
         await self._write(client, self._crypto.encode_packet(pkt_status))
         await asyncio.sleep(0.3)
 
         # Schritt 2: MD5 Auth Packet (cmd_id=0x86)
         md5_payload = build_auth_md5(str(self._device.user_id), self._serial)
-        pkt_auth = Packet(0x21, 0x35, 0x35, 0x86, md5_payload, 0x01, 0x01, 0x13)
+        pkt_auth = Packet(0x21, 0x35, 0x35, 0x86, md5_payload, 0x01, 0x01, 0x13,
+                          seq=self._next_seq())
         await self._write(client, self._crypto.encode_packet(pkt_auth))
         log.debug("[%s] Type1: Auth gesendet", self._device.name)
 
@@ -369,34 +379,31 @@ class BLEDeviceManager:
 
         if self._auth_state == "type7_authstatus_sent":
             # Auth Status Response
-            self._auth_buffer.extend(data)
-            payload = parse_simple(bytes(self._auth_buffer))
-            if payload:
-                self._auth_buffer.clear()
-                status = _extract_type7_status(payload)
+            packets = self._crypto.decode_packets(data)
+            if packets:
+                payload = packets[0].payload
+                status = payload[0] if payload else 0x00
                 log.debug("[%s] Type7: Auth Status empfangen (payload=%s, status=0x%02X)",
                           self._device.name, payload.hex(), status)
-                if status == 0x00:
-                    await self._auth_type7_step4_md5(self._client)
-                else:
-                    log.warning("[%s] Type7: Auth Status abgelehnt (status=0x%02X)",
-                                self._device.name, status)
-                    _copy_log(logging.WARNING,
-                              "[%s] Type7 Auth Status rejected: payload=%s status=0x%02X serial=%s",
-                              self._device.name, payload.hex(), status, self._serial)
+                _copy_log(logging.DEBUG,
+                          "[%s] Type7 Auth Status Response: payload=%s status=0x%02X",
+                          self._device.name, payload.hex(), status)
+                await self._auth_type7_step4_md5(self._client)
             return
 
         if self._auth_state == "type7_auth_sent":
             # MD5 Auth Response
-            self._auth_buffer.extend(data)
-            payload = parse_simple(bytes(self._auth_buffer))
-            if payload:
-                self._auth_buffer.clear()
-                status = _extract_type7_status(payload)
+            packets = self._crypto.decode_packets(data)
+            for pkt in packets:
+                payload = pkt.payload
+                status = payload[0] if payload else 0x00
                 if status == 0x00:
                     log.info("[%s] ✓ Authentifizierung erfolgreich!", self._device.name)
                     self._authenticated = True
                     self._auth_state = "authenticated"
+                    _copy_log(logging.INFO,
+                              "[%s] Type7 MD5-Auth accepted: payload=%s",
+                              self._device.name, payload.hex())
                 else:
                     log.warning("[%s] Type7: MD5-Auth abgelehnt (status=0x%02X)",
                                 self._device.name, status)
