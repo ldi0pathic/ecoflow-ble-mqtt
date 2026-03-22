@@ -5,6 +5,7 @@
 
 import asyncio
 import logging
+import time
 import struct
 from typing import Optional, Any
 
@@ -102,6 +103,8 @@ class BLEDeviceManager:
         # State-Machine für Auth
         self._auth_state      = "idle"
         self._seq_counter     = 0
+        self._auth_completed_at: float | None = None
+        self._saw_post_auth_data = False
 
     # =========================================================================
     # Hauptschleife
@@ -135,6 +138,8 @@ class BLEDeviceManager:
                         self._auth_buffer   = bytearray()
                         self._auth_state    = "idle"
                         self._seq_counter   = 0
+                        self._auth_completed_at = None
+                        self._saw_post_auth_data = False
 
                         if self._encrypt_type == 1:
                             self._crypto = Type1Crypto(self._serial)
@@ -154,6 +159,16 @@ class BLEDeviceManager:
                                 await self._write(client, encoded)
                             except asyncio.QueueEmpty:
                                 pass
+                            if (
+                                self._authenticated
+                                and self._auth_completed_at is not None
+                                and not self._saw_post_auth_data
+                                and time.monotonic() - self._auth_completed_at > 5
+                            ):
+                                _copy_log(logging.WARNING,
+                                          "[%s] No payload data received within 5s after auth",
+                                          self._device.name)
+                                self._saw_post_auth_data = True
                             await asyncio.sleep(0.1)
 
                 except EOFError:
@@ -414,6 +429,8 @@ class BLEDeviceManager:
                     log.info("[%s] ✓ Authentifizierung erfolgreich!", self._device.name)
                     self._authenticated = True
                     self._auth_state = "authenticated"
+                    self._auth_completed_at = time.monotonic()
+                    self._saw_post_auth_data = False
                     _copy_log(logging.INFO,
                               "[%s] Type7 MD5-Auth accepted: payload=%s",
                               self._device.name, payload.hex())
@@ -434,6 +451,7 @@ class BLEDeviceManager:
             for pkt in packets:
                 parsed = self._device.parse_data(pkt)
                 if parsed:
+                    self._saw_post_auth_data = True
                     self._device.update_state(parsed)
 
     # =========================================================================
