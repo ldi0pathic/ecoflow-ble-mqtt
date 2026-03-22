@@ -389,6 +389,10 @@ class BLEDeviceManager:
                           "[%s] Type7 Auth Status Response: payload=%s status=0x%02X",
                           self._device.name, payload.hex(), status)
                 await self._auth_type7_step4_md5(self._client)
+            elif data:
+                _copy_log(logging.WARNING,
+                          "[%s] Type7 Auth Status undecodable notify: len=%d raw=%s",
+                          self._device.name, len(data), data.hex())
             return
 
         if self._auth_state == "type7_auth_sent":
@@ -411,6 +415,10 @@ class BLEDeviceManager:
                               "[%s] Type7 MD5-Auth rejected: payload=%s status=0x%02X serial=%s",
                               self._device.name, payload.hex(), status, self._serial)
                 return
+            if data:
+                _copy_log(logging.WARNING,
+                          "[%s] Type7 MD5-Auth undecodable notify: len=%d raw=%s",
+                          self._device.name, len(data), data.hex())
 
         if self._auth_state == "authenticated":
             packets = self._crypto.decode_packets(data)
