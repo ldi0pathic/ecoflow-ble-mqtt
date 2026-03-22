@@ -43,6 +43,10 @@ def _extract_type7_status(payload: bytes) -> int:
     return payload[-1]
 
 
+def _copy_log(level: int, msg: str, *args):
+    log.log(level, "[COPY] " + msg, *args)
+
+
 def _get_encrypt_type(manufacturer_data: dict) -> int:
     """Liest encrypt_type aus BLE Advertisement Manufacturer Data."""
     data = manufacturer_data.get(EF_MANUFACTURER_ID, b"")
@@ -240,6 +244,9 @@ class BLEDeviceManager:
         packet = Packet(0x21, 0x35, 0x35, 0x89, b"", 0x01, 0x01, 0x03)
         encoded = self._crypto.encode_packet(packet)
         log.debug("[%s] Type7: sende Auth Status Request", self._device.name)
+        _copy_log(logging.DEBUG,
+                  "[%s] Type7 Auth Status Request: plain=%s encoded=%s",
+                  self._device.name, packet.toBytes().hex(), encoded.hex())
         await self._write(client, encoded)
 
     async def _auth_type7_step4_md5(self, client: BleakClient):
@@ -249,6 +256,9 @@ class BLEDeviceManager:
         packet = Packet(0x21, 0x35, 0x35, 0x86, md5_payload, 0x01, 0x01, 0x03)
         encoded = self._crypto.encode_packet(packet)
         log.debug("[%s] Type7: sende MD5-Auth Packet", self._device.name)
+        _copy_log(logging.DEBUG,
+                  "[%s] Type7 MD5-Auth Request: payload_len=%d encoded=%s",
+                  self._device.name, len(md5_payload), encoded.hex())
         await self._write(client, encoded)
 
     # =========================================================================
@@ -371,6 +381,9 @@ class BLEDeviceManager:
                 else:
                     log.warning("[%s] Type7: Auth Status abgelehnt (status=0x%02X)",
                                 self._device.name, status)
+                    _copy_log(logging.WARNING,
+                              "[%s] Type7 Auth Status rejected: payload=%s status=0x%02X serial=%s",
+                              self._device.name, payload.hex(), status, self._serial)
             return
 
         if self._auth_state == "type7_auth_sent":
@@ -387,6 +400,9 @@ class BLEDeviceManager:
                 else:
                     log.warning("[%s] Type7: MD5-Auth abgelehnt (status=0x%02X)",
                                 self._device.name, status)
+                    _copy_log(logging.WARNING,
+                              "[%s] Type7 MD5-Auth rejected: payload=%s status=0x%02X serial=%s",
+                              self._device.name, payload.hex(), status, self._serial)
                 return
 
         if self._auth_state == "authenticated":
@@ -402,6 +418,10 @@ class BLEDeviceManager:
 
     def _on_disconnect(self, _client):
         log.warning("[%s] BLE Verbindung getrennt", self._device.name)
+        if self._auth_state != "authenticated":
+            _copy_log(logging.WARNING,
+                      "[%s] Disconnect during auth: state=%s serial=%s",
+                      self._device.name, self._auth_state, self._serial)
         self._authenticated = False
         self._auth_state    = "idle"
         self._auth_buffer.clear()
