@@ -74,6 +74,7 @@ class BLEDeviceManager:
         self._serial          = ""  # Seriennummer vom Gerät
         self._crypto          = None
         self._rx_buffer       = bytearray()
+        self._auth_buffer     = bytearray()
         self._notify_queue    : asyncio.Queue[bytes] = asyncio.Queue(maxsize=notify_queue_size)
         self._notify_task     : Optional[asyncio.Task] = None
         # State-Machine für Auth
@@ -108,6 +109,7 @@ class BLEDeviceManager:
                         self._client        = client
                         self._authenticated = False
                         self._rx_buffer     = bytearray()
+                        self._auth_buffer   = bytearray()
                         self._auth_state    = "idle"
 
                         if self._encrypt_type == 1:
@@ -193,11 +195,13 @@ class BLEDeviceManager:
     async def _auth_type7_step1(self, client: BleakClient):
         """Type7 Schritt 1: Public Key senden"""
         self._auth_state = "type7_pubkey_sent"
+        self._auth_buffer.clear()
         pubkey = self._crypto.public_key_bytes
         log.debug("[%s] Type7: sende Public Key (%d bytes)",
                   self._device.name, len(pubkey))
-        # Public Key wird als einfaches Write gesendet
-        await client.write_gatt_char(UUID_WRITE, pubkey, response=True)
+        # Upstream-Protokoll erwartet ein unverschlüsseltes 5A5A-Command-Frame
+        # mit Prefix 0x01 0x00 vor dem eigentlichen SECP160r1-Public-Key.
+        await self._write(client, encode_simple(b"\x01\x00" + pubkey))
 
     async def _auth_type7_step2_keyinfo(self, client: BleakClient):
         """Type7 Schritt 2: Key Info Request"""
@@ -307,9 +311,12 @@ class BLEDeviceManager:
     async def _handle_type7(self, data: bytes):
         """Type7 (Delta2 etc.) Notify Handler"""
         if self._auth_state == "type7_pubkey_sent":
-            # Device Public Key empfangen
-            if len(data) >= 20:
-                dev_pubkey = data[:20]  # SECP160r1 = 20 bytes
+            # Device Public Key wird als simples 5A5A-Command-Frame zurückgegeben.
+            self._auth_buffer.extend(data)
+            payload = parse_simple(bytes(self._auth_buffer))
+            if payload and len(payload) >= 43:
+                self._auth_buffer.clear()
+                dev_pubkey = payload[3:43]
                 self._crypto.compute_shared_key(dev_pubkey)
                 log.debug("[%s] Type7: Device Public Key empfangen", self._device.name)
                 await self._auth_type7_step2_keyinfo(self._client)
@@ -317,8 +324,10 @@ class BLEDeviceManager:
 
         if self._auth_state == "type7_keyinfo_sent":
             # Key Info Response
-            payload = parse_simple(data)
+            self._auth_buffer.extend(data)
+            payload = parse_simple(bytes(self._auth_buffer))
             if payload and len(payload) > 1 and payload[0] == 0x02:
+                self._auth_buffer.clear()
                 self._crypto.process_key_info(payload[1:])
                 log.debug("[%s] Type7: Session Key empfangen", self._device.name)
                 await self._auth_type7_step3_authstatus(self._client)
