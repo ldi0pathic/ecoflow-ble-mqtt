@@ -2,16 +2,16 @@
 # mqtt_bridge.py - MQTT Anbindung
 # Veröffentlicht Gerätedaten und empfängt Steuerbefehle
 #
-# Topics (Beispiel für PowerStream):
-#   Lesen:    ecoflow/powerstream_800w/pv1_input_watts   → "245.3"
-#             ecoflow/powerstream_800w/battery_soc        → "78"
-#   Steuern:  ecoflow/powerstream_800w/set/permanent_watts ← "600"
-#   Status:   ecoflow/powerstream_800w/status             → "online" / "offline"
+# Topics (Beispiel für Delta 2 Max):
+#   Lesen:    ecoflow/delta2_max/battery_level          → "78.5"
+#             ecoflow/delta2_max/ac_output_power         → "350"
+#   Steuern:  ecoflow/delta2_max/set/ac_charging_speed  ← "800"
+#             ecoflow/delta2_max/set/ac_ports            ← "1"
+#   Status:   ecoflow/delta2_max/status                  → "online" / "offline"
 # =============================================================================
 
 import json
 import logging
-import threading
 from typing import Optional, Callable
 
 import paho.mqtt.client as mqtt
@@ -112,29 +112,33 @@ class MQTTBridge:
             log.warning("MQTT getrennt (rc=%d), paho reconnectet automatisch...", rc)
 
     def _on_message(self, _client, _userdata, msg):
-        """Verarbeitet eingehende Set-Befehle."""
-        # Topic: ecoflow/<device_name>/set/<key>
-        parts = msg.topic.split("/")
-        if len(parts) < 4 or parts[-2] != "set":
-            # Neues Format: ecoflow/<device>/set/<key>
-            # parts: ["ecoflow", "powerstream_800w", "set", "permanent_watts"]
-            pass
+        """
+        Verarbeitet eingehende Set-Befehle.
 
+        Erwartet Topic-Format: <base_topic>/<device_name>/set/<key>
+        Beispiel: ecoflow/delta2_max/set/ac_charging_speed
+        """
         try:
-            # Gerätename aus Topic extrahieren
-            # base_topic kann Slashes enthalten → relativ zum Base zählen
+            topic = msg.topic
             base_parts = self._base_topic.split("/")
-            relative   = parts[len(base_parts):]  # ["powerstream_800w", "set", "permanent_watts"]
+            all_parts  = topic.split("/")
+
+            # Mindestlänge: base + device + "set" + key
+            min_len = len(base_parts) + 3
+            if len(all_parts) < min_len:
+                log.debug("MQTT: Topic zu kurz, ignoriert: %s", topic)
+                return
+
+            # Relative Teile nach dem Base-Prefix
+            relative = all_parts[len(base_parts):]
+            # relative = ["device_name", "set", "key"] oder länger
 
             if len(relative) < 3 or relative[1] != "set":
+                log.debug("MQTT: Kein Set-Topic, ignoriert: %s", topic)
                 return
 
             device_name = relative[0]
-            key         = "/".join(relative[2:])   # Für verschachtelte Keys
-            
-            if key.endswith("/set"):
-                key = key[:-4]
-                
+            key         = "/".join(relative[2:])   # Unterstützt verschachtelte Keys
             value       = msg.payload.decode("utf-8").strip()
 
             log.info("[%s] Set-Befehl empfangen: %s = %s", device_name, key, value)
@@ -143,7 +147,8 @@ class MQTTBridge:
             if callback:
                 callback(key, value)
             else:
-                log.warning("Unbekanntes Gerät in Set-Topic: %s", device_name)
+                log.warning("MQTT: Unbekanntes Gerät '%s' in Set-Topic: %s",
+                            device_name, topic)
 
         except Exception as e:
-            log.error("Fehler bei Set-Befehl: %s", e)
+            log.error("MQTT: Fehler bei Set-Befehl (topic=%s): %s", msg.topic, e)
